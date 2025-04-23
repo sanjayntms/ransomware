@@ -1,0 +1,43 @@
+name: Deploy Ransomware PoC with Azure Firewall
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Azure Login
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: Set variables
+      run: |
+        echo "RG_NAME=ransomware-rg" >> $GITHUB_ENV
+        echo "LOCATION=centralindia" >> $GITHUB_ENV
+        echo "FW_NAME=demo-firewall" >> $GITHUB_ENV
+        echo "VNET_NAME=ransomware-vnet" >> $GITHUB_ENV
+        echo "WEB_VM=webVM" >> $GITHUB_ENV
+        echo "ATTACKER_VM=attackerVM" >> $GITHUB_ENV
+
+    - name: Deploy resources
+      run: |
+        az group create --name $RG_NAME --location $LOCATION
+        az network vnet create --resource-group $RG_NAME --name $VNET_NAME --address-prefix 10.0.0.0/16           --subnet-name AzureFirewallSubnet --subnet-prefix 10.0.1.0/24
+        az network vnet subnet create --resource-group $RG_NAME --vnet-name $VNET_NAME --name webSubnet --address-prefix 10.0.2.0/24
+        az network vnet subnet create --resource-group $RG_NAME --vnet-name $VNET_NAME --name attackerSubnet --address-prefix 10.0.3.0/24
+        az network public-ip create --resource-group $RG_NAME --name fw-pip --sku Standard
+        az network firewall create --name $FW_NAME --resource-group $RG_NAME --location $LOCATION
+        az network firewall ip-config create --firewall-name $FW_NAME --resource-group $RG_NAME           --name FW-config --public-ip-address fw-pip --vnet-name $VNET_NAME
+        az network firewall update --name $FW_NAME --resource-group $RG_NAME --threat-intel-mode Alert
+
+    - name: Create VMs
+      run: |
+        az vm create --name $WEB_VM --resource-group $RG_NAME --image Ubuntu2204 --admin-username azureuser           --generate-ssh-keys --vnet-name $VNET_NAME --subnet webSubnet --size Standard_B1s
+        az vm create --name $ATTACKER_VM --resource-group $RG_NAME --image Ubuntu2204 --admin-username azureuser           --generate-ssh-keys --vnet-name $VNET_NAME --subnet attackerSubnet --size Standard_B1s
+
+    - name: Upload attack scripts
+      run: |
+        az vm run-command invoke --resource-group $RG_NAME --name $ATTACKER_VM --command-id RunShellScript           --scripts "@scripts/c2server.sh"
+        az vm run-command invoke --resource-group $RG_NAME --name $WEB_VM --command-id RunShellScript           --scripts "@scripts/victim.sh"
